@@ -3,6 +3,7 @@
 package com.rosan.installer.ui.page.main.settings.preferred
 
 import android.annotation.SuppressLint
+import android.content.Context
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.PaddingValues
@@ -46,6 +47,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.rosan.installer.R
 import com.rosan.installer.core.device.model.Level
 import com.rosan.installer.core.env.AppConfig
+import com.rosan.installer.domain.settings.model.backup.BackupRestorePreview
+import com.rosan.installer.domain.settings.model.backup.BackupValidationIssue
 import com.rosan.installer.domain.settings.model.config.Authorizer
 import com.rosan.installer.ui.icons.AppIcons
 import com.rosan.installer.ui.navigation.LocalNavigator
@@ -97,8 +100,9 @@ fun PreferredPage(
         mutableStateOf<PreferredViewEvent.ShowDefaultInstallerErrorDetail?>(null)
     }
     var pendingExportContent by remember { mutableStateOf<String?>(null) }
-    var pendingRestoreContent by remember { mutableStateOf<String?>(null) }
+    var pendingRestorePreview by remember { mutableStateOf<BackupRestorePreview?>(null) }
     var showRestoreConfirmDialog by remember { mutableStateOf(false) }
+    var backupValidationErrorText by remember { mutableStateOf<String?>(null) }
 
     val detailLabel = stringResource(id = R.string.details)
     val coroutineScope = rememberCoroutineScope()
@@ -131,8 +135,7 @@ fun PreferredPage(
             runCatching {
                 context.readBackupText(uri)
             }.onSuccess { content ->
-                pendingRestoreContent = content
-                showRestoreConfirmDialog = true
+                viewModel.dispatch(PreferredViewAction.PrepareRestoreBackup(content))
             }.onFailure {
                 snackBarHostState.showSnackbar(context.getString(R.string.backup_settings_file_read_failed))
             }
@@ -169,6 +172,15 @@ fun PreferredPage(
 
                 is PreferredViewEvent.ShowBackupError -> {
                     snackBarHostState.showSnackbar(context.getString(event.titleResId))
+                }
+
+                is PreferredViewEvent.ShowBackupRestorePreview -> {
+                    pendingRestorePreview = event.preview
+                    showRestoreConfirmDialog = true
+                }
+
+                is PreferredViewEvent.ShowBackupValidationError -> {
+                    backupValidationErrorText = event.issues.formatBackupValidationIssues(context)
                 }
             }
         }
@@ -363,20 +375,24 @@ fun PreferredPage(
     }
 
     if (showRestoreConfirmDialog) {
+        val preview = pendingRestorePreview
         AlertDialog(
             onDismissRequest = {
                 showRestoreConfirmDialog = false
-                pendingRestoreContent = null
+                pendingRestorePreview = null
             },
             title = { Text(stringResource(R.string.backup_settings_restore_confirm_title)) },
-            text = { Text(stringResource(R.string.backup_settings_restore_confirm_desc)) },
+            text = {
+                Text(
+                    preview?.formatBackupRestorePreview(context)
+                        ?: stringResource(R.string.backup_settings_restore_confirm_desc)
+                )
+            },
             confirmButton = {
                 TextButton(
                     onClick = {
-                        pendingRestoreContent?.let {
-                            viewModel.dispatch(PreferredViewAction.RestoreBackupFromJson(it))
-                        }
-                        pendingRestoreContent = null
+                        viewModel.dispatch(PreferredViewAction.ConfirmRestoreBackup)
+                        pendingRestorePreview = null
                         showRestoreConfirmDialog = false
                     }
                 ) {
@@ -387,7 +403,7 @@ fun PreferredPage(
                 TextButton(
                     onClick = {
                         showRestoreConfirmDialog = false
-                        pendingRestoreContent = null
+                        pendingRestorePreview = null
                     }
                 ) {
                     Text(stringResource(R.string.cancel))
@@ -395,4 +411,47 @@ fun PreferredPage(
             }
         )
     }
+
+    backupValidationErrorText?.let { errorText ->
+        AlertDialog(
+            onDismissRequest = { backupValidationErrorText = null },
+            title = { Text(stringResource(R.string.backup_settings_validation_failed_title)) },
+            text = { Text(errorText) },
+            confirmButton = {
+                TextButton(onClick = { backupValidationErrorText = null }) {
+                    Text(stringResource(R.string.confirm))
+                }
+            }
+        )
+    }
 }
+
+private fun BackupRestorePreview.formatBackupRestorePreview(context: Context): String =
+    buildString {
+        append(
+            context.getString(
+                R.string.backup_settings_restore_preview_desc,
+                profileCount,
+                scopeCount,
+                settingCount,
+                historyCount
+            )
+        )
+        if (ignoredSettingCount > 0) {
+            append("\n")
+            append(context.getString(R.string.backup_settings_restore_ignored_settings, ignoredSettingCount))
+        }
+        if (warnings.isNotEmpty()) {
+            append("\n\n")
+            append(context.getString(R.string.backup_settings_restore_warnings_title))
+            append("\n")
+            append(warnings.formatBackupValidationIssues(context))
+        }
+    }
+
+private fun List<BackupValidationIssue>.formatBackupValidationIssues(
+    context: Context
+): String =
+    joinToString(separator = "\n") { issue ->
+        context.getString(issue.messageResId, *issue.args.toTypedArray())
+    }
